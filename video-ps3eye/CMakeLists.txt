@@ -1,13 +1,21 @@
 add_compile_definitions(PS3EYE_DEBUG)
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ps3eye-driver/CMakeLists.txt")
-    add_subdirectory("ps3eye-driver")
-
+    # libusb must be located *before* add_subdirectory(). Directory properties
+    # such as the link libraries and search paths are only inherited by
+    # subdirectories added after the call, and ps3eye-driver links a bare
+    # -lusb-1.0. Discovering libusb afterwards left the driver's own executables
+    # without a search path, which breaks wherever libusb is not in a default
+    # linker directory -- e.g. Homebrew on macOS:
+    #     ld: library 'usb-1.0' not found
+    #     FAILED: video-ps3eye/ps3eye-driver/ps3eye-frame-test
     if(NOT MSVC)
+        find_package(PkgConfig QUIET)
         if(PKG_CONFIG_FOUND)
             pkg_check_modules(libusb "libusb-1.0" QUIET IMPORTED_TARGET)
         endif()
         if(libusb_FOUND)
+            link_directories(${libusb_LIBRARY_DIRS})
             link_libraries(PkgConfig::libusb)
             if(WIN32)
                 set(_bins "")
@@ -38,6 +46,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ps3eye-driver/CMakeLists.txt")
             install(FILES "${pdb}" DESTINATION "${opentrack-debug}" OPTIONAL)
         endif()
     endif()
+
+    add_subdirectory("ps3eye-driver")
 endif()
 
 if(TARGET ps3eye-sdl AND FALSE)
