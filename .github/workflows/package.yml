@@ -16,7 +16,7 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                os: [ubuntu-latest, macos-latest]
+                os: [ubuntu-latest, macos-latest, windows-latest]
 
         steps:
             - name: Checkout
@@ -49,9 +49,39 @@ jobs:
               if: runner.os == 'macOS'
               run: brew install autoconf autoconf-archive automake libtool libusb mono create-dmg
 
+            # Inno Setup is not on the runner image, and Qt's buildtrees do not
+            # fit alongside the rest of it.
+            - name: Install system prerequisites (Windows)
+              if: runner.os == 'Windows'
+              shell: pwsh
+              run: |
+                  choco install innosetup -y --no-progress
+                  Remove-Item "C:\hostedtoolcache\windows\Python" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item "C:\hostedtoolcache\windows\Ruby" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item "C:\hostedtoolcache\windows\go" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item "C:\Android" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item "C:\Miniconda" -Recurse -Force -ErrorAction SilentlyContinue
+
+            # See the same step in cmake.yml: the runner ships MinGW on PATH and
+            # CMake tries c++ and g++ ahead of cl.
+            - name: Set up MSVC (Windows)
+              if: runner.os == 'Windows'
+              shell: cmd
+              run: |
+                  set "vswhere=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+                  for /f "usebackq delims=" %%i in (`"%vswhere%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "vsdir=%%i"
+                  if not defined vsdir exit /b 1
+                  call "%vsdir%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+                  >>"%GITHUB_ENV%" echo CC=cl
+                  >>"%GITHUB_ENV%" echo CXX=cl
+                  >>"%GITHUB_ENV%" echo PATH=%PATH%
+                  >>"%GITHUB_ENV%" echo INCLUDE=%INCLUDE%
+                  >>"%GITHUB_ENV%" echo LIB=%LIB%
+                  >>"%GITHUB_ENV%" echo LIBPATH=%LIBPATH%
+
             - name: Set up NuGet binary cache
               shell: bash
-              if: runner.os == 'macOS'
+              if: runner.os != 'Linux'
               env:
                   FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
                   GH_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -61,7 +91,9 @@ jobs:
                       echo "::error::'vcpkg fetch nuget' returned no usable path: $nuget"
                       exit 1
                   fi
-                  run_nuget() { mono "$nuget" "$@"; }
+                  run_nuget() {
+                      if [ "$RUNNER_OS" = "macOS" ]; then mono "$nuget" "$@"; else "$nuget" "$@"; fi
+                  }
 
                   run_nuget sources add \
                       -Source "$FEED_URL" \
@@ -91,8 +123,8 @@ jobs:
                   cmake --preset ci -DCMAKE_INSTALL_PREFIX="$PWD/AppDir/usr"
                   cmake --build --preset ci
 
-            - name: Build (macOS)
-              if: runner.os == 'macOS'
+            - name: Build (macOS/Windows)
+              if: runner.os != 'Linux'
               run: |
                   cmake --preset ci
                   cmake --build --preset ci
@@ -163,8 +195,39 @@ jobs:
                   mv "$dmg" "${{ env.version }}-macos-arm64.dmg"
                   echo "artifact=${{ env.version }}-macos-arm64.dmg" >> "$GITHUB_ENV"
 
+            # installer/opentrack-installer.iss reads opentrack-version.hxx and
+            # install/ out of MyDir, and names the output after the version it
+            # finds there, so only the build directory needs passing in.
+            - name: Pack installer (Windows)
+              if: runner.os == 'Windows'
+              shell: pwsh
+              run: |
+                  $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+                  if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+
+                  & $iscc "/DMyDir=$PWD\build" "/O$PWD" installer\opentrack-installer.iss
+                  if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
+
+                  $setup = Get-ChildItem -Path . -Filter '*-win64-setup.exe' | Select-Object -First 1
+                  if (-not $setup) { throw "no installer was produced" }
+
+                  # A portable archive as well, for the USB-stick install mode.
+                  $portable = "${{ env.version }}-win64-portable.zip"
+                  Compress-Archive -Path build\install\* -DestinationPath $portable
+                  Get-ChildItem $setup.Name, $portable | Format-Table Name, Length
+
+                  Add-Content -Path $env:GITHUB_ENV -Encoding utf8 -Value "artifact=$($setup.Name)"
+                  Add-Content -Path $env:GITHUB_ENV -Encoding utf8 -Value "portable=$portable"
+
             - name: Upload
               uses: actions/upload-artifact@v4
               with:
                   name: ${{ env.artifact }}
                   path: ${{ env.artifact }}
+
+            - name: Upload portable archive (Windows)
+              if: runner.os == 'Windows'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ env.portable }}
+                  path: ${{ env.portable }}
