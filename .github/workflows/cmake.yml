@@ -1,90 +1,138 @@
 name: CMake
 
 on:
-  - push
-  - pull_request
+    - push
+    - pull_request
 
-env:
-  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
-  BUILD_TYPE: Release
+# A Qt build occupies a runner for the better part of an hour, so don't leave
+# superseded commits building. Overlapping runs also race to upload identical
+# binary packages, which shows up as 409 Conflict noise from nuget push.
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+# packages:write lets vcpkg push binary packages to the GitHub Packages NuGet
+# feed. Listing permissions at all drops every other scope, so contents:read has
+# to be spelled out for actions/checkout. On pull requests from forks GitHub
+# downgrades packages to read-only, which just means those runs consume the cache
+# without refreshing it.
+permissions:
+    contents: read
+    packages: write
 
 jobs:
-  build:
-    # The CMake configure and build commands are platform agnostic and should work equally
-    # well on Windows or Mac.  You can convert this to a matrix build if you need
-    # cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-        include:
-        - os: macos-latest
-          cmake: cmake
-        - os: ubuntu-latest
-          cmake: cmake
-        - os: windows-latest
-          cmake: .\.github\workflows\build-windows.bat cmake
+    build:
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, macos-latest, windows-latest]
 
-    steps:
-    - name: clone opentrack/opentrack
-      uses: actions/checkout@v4
-      with:
-        submodules: true
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  submodules: true
 
-    - name: clone opentrack/depends
-      uses: actions/checkout@v4
-      with:
-        repository: opentrack/opentrack-depends
-        submodules: true
-        path: opentrack-depends
+            - name: Set up vcpkg
+              shell: bash
+              run: echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
 
-    - uses: seanmiddleditch/gha-setup-ninja@master
+            # Qt and OpenCV come from the distribution on Linux, from vcpkg
+            # elsewhere -- see the comment in vcpkg.json.
+            - name: Install system prerequisites (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y libproc2-dev libopencv-dev wine64-tools
+                  sudo apt-get install -y qt6-tools-dev qt6-serialport-dev qt6-base-private-dev
+                  sudo apt-get install -y libusb-1.0-0-dev libsdl2-dev
 
-    - name: Install Linux Dependencies
-      run: |
-        sudo apt update
-        sudo apt install libproc2-dev libopencv-dev libopencv-dev wine64-tools
-        sudo apt install qt6-tools-dev qt6-serialport-dev qt6-base-private-dev
-        sudo apt install libusb-1.0-0-dev libsdl2-dev
+                  # onnxruntime has no Ubuntu package
+                  mkdir /tmp/onnx
+                  wget -qO- https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz | tar --strip-components=1 -zxf - -C /tmp/onnx
+                  sudo cp -R /tmp/onnx/lib /tmp/onnx/include /usr
 
-        mkdir /tmp/a
-        wget -qO- https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz  | tar --strip-components=1 -zxf - -C/tmp/a
-        sudo cp -R /tmp/a/{lib,include} /usr
-      if: matrix.os == 'ubuntu-latest'
+            # mono is only here to run vcpkg's nuget.exe, see below.
+            - name: Install system prerequisites (macOS)
+              if: runner.os == 'macOS'
+              run: brew install autoconf autoconf-archive automake libtool libusb mono
 
-    - name: Install opencv (Windows)
-      uses: cvpkg/opencv-action@main
-      with:
-        opencv_tag: '4.x'
-        BUILD_LIST: 'core,imgcodecs,imgproc,video,videoio,calib3d,highgui'
-        BUILD_SHARED_LIBS: 'OFF'
-        BUILD_WITH_STATIC_CRT: 'OFF'
-      if: matrix.os == 'windows-latest'
+            # Only Windows and macOS build Qt, so only they need a binary cache;
+            # on Linux vcpkg builds libusbmuxd and four small C libraries in well
+            # under a minute, which is not worth an apt install of mono.
+            #
+            # https://learn.microsoft.com/vcpkg/consume/binary-caching-github-packages
+            - name: Set up NuGet binary cache (Windows/macOS)
+              if: runner.os != 'Linux'
+              shell: bash
+              env:
+                  FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+                  GH_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  # On non-Windows this also fetches mono, which is why the brew
+                  # step above runs first; without it the last line of output is
+                  # an error note rather than a path.
+                  nuget="$(vcpkg fetch nuget | tail -n 1)"
+                  if [ ! -f "$nuget" ]; then
+                      echo "::error::'vcpkg fetch nuget' returned no usable path: $nuget"
+                      exit 1
+                  fi
 
-    - name: Install opencv (macOS)
-      run: brew install opencv
-      if: matrix.os == 'macos-latest'
+                  run_nuget() {
+                      if [ "$RUNNER_OS" = "macOS" ]; then mono "$nuget" "$@"; else "$nuget" "$@"; fi
+                  }
 
-    - name: Install Qt
-      uses: jurplel/install-qt-action@v4
-      with:
-        dir: "${{ github.workspace }}/qt"
-        version: '6.10.3'
-        modules: qtserialport qtmultimedia qtimageformats
-        target: 'desktop'
-        #use-official: true
-      if: matrix.os != 'ubuntu-latest'
+                  run_nuget sources add \
+                      -Source "$FEED_URL" \
+                      -StorePasswordInClearText \
+                      -Name GitHubPackages \
+                      -UserName '${{ github.repository_owner }}' \
+                      -Password "$GH_PACKAGES_TOKEN"
+                  run_nuget setapikey "$GH_PACKAGES_TOKEN" -Source "$FEED_URL"
 
-    - name: Configure
-      run: ${{matrix.cmake}} -GNinja -S ${{github.workspace}}/ -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DQt6_DIR="${{env.QT_ROOT_DIR}}/lib/cmake/Qt6" -DONNXRuntime_DIR=/usr/lib/cmake/onnxruntime
+                  echo "VCPKG_BINARY_SOURCES=clear;nuget,$FEED_URL,readwrite" >> "$GITHUB_ENV"
 
-    - name: Build
-      run: ${{matrix.cmake}} --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target install
+            # The runner ships MinGW on PATH, so without activating MSVC first
+            # CMake picks C:\mingw64\bin\c++.exe and then cannot link against
+            # vcpkg's MSVC-built Qt:
+            #     undefined reference to `__imp__ZNK11QObjectData17dynamicMetaObjectEv'
+            # CC/CXX are pinned to cl so the choice does not depend on PATH order.
+            - name: Set up MSVC (Windows)
+              if: runner.os == 'Windows'
+              shell: cmd
+              run: |
+                  set "vswhere=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+                  for /f "usebackq delims=" %%i in (`"%vswhere%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "vsdir=%%i"
+                  if not defined vsdir exit /b 1
+                  call "%vsdir%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+                  >>"%GITHUB_ENV%" echo CC=cl
+                  >>"%GITHUB_ENV%" echo CXX=cl
+                  >>"%GITHUB_ENV%" echo PATH=%PATH%
+                  >>"%GITHUB_ENV%" echo INCLUDE=%INCLUDE%
+                  >>"%GITHUB_ENV%" echo LIB=%LIB%
+                  >>"%GITHUB_ENV%" echo LIBPATH=%LIBPATH%
 
-#    - name: Upload build
-#      uses: actions/upload-artifact@v3
-#      with:
-#        name: buildoutput
-#        path: ${{github.workspace}}/build/
+            # Qt's buildtrees do not fit alongside the rest of the toolchain, and
+            # vcpkg builds under C:\vcpkg. The ci preset also passes
+            # --clean-after-build; both are needed.
+            - name: Free disk space (Windows)
+              if: runner.os == 'Windows'
+              shell: pwsh
+              run: |
+                  Remove-Item "C:\hostedtoolcache\windows\Python" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item "C:\hostedtoolcache\windows\Ruby" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item "C:\hostedtoolcache\windows\go" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item "C:\Android" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item "C:\Miniconda" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item "$env:LOCALAPPDATA\Docker" -Recurse -Force -ErrorAction SilentlyContinue
+                  Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } }, @{n = 'UsedGB'; e = { [math]::Round($_.Used / 1GB, 1) } }
+
+            # Identical on all three platforms. The vcpkg toolchain installs the
+            # manifest as part of configure, so there is no separate
+            # `vcpkg install` step.
+            - name: Configure
+              run: cmake --preset ci
+
+            - name: Build
+              run: cmake --build --preset ci
