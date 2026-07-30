@@ -107,7 +107,34 @@ The code is held to a high-quality standard and written with utmost care; consid
 
 ## Building opentrack from source
 
-On Windows, use either mingw-w64 or MS Visual Studio 2015 Update 3/newer. On other platforms use GNU or LLVM. Refer to [Visual C++ 2015 build instructions](https://github.com/opentrack/opentrack/wiki/Building-under-MS-Visual-C---2017-and-later).
+Windows, macOS and Linux share one configuration, driven by `CMakePresets.json`
+and vcpkg. Point `VCPKG_ROOT` at a vcpkg checkout and run:
 
-On Linux, see [our wiki's Linux build instructions](https://github.com/opentrack/opentrack/wiki/Building-on-Linux).
+```sh
+cmake --preset default
+cmake --build --preset default
+```
+
+That installs into `build/install`. `--preset debug` builds out of `build-debug`
+instead. CMake 3.21 or newer is required for presets, and a C++20 compiler:
+MSVC 2017 or newer on Windows, GNU or LLVM elsewhere.
+
+vcpkg installs the dependencies listed in `vcpkg.json` during the configure
+step, so there is no separate `vcpkg install` to run. On Windows and macOS that
+includes Qt6 and OpenCV, which makes the first configure slow — expect Qt to be
+built from source. On Linux those come from the distribution instead, because
+vcpkg's `qtbase` needs distro-provided X11/GL headers there regardless:
+
+```sh
+sudo apt-get install libproc2-dev libopencv-dev wine64-tools
+sudo apt-get install qt6-tools-dev qt6-serialport-dev qt6-base-private-dev
+```
+
+Optional on Linux: `libusb-1.0-0-dev` and `libsdl2-dev` for the PS3 Eye camera,
+and [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases) for
+`tracker-neuralnet`. Modules whose dependencies are missing are skipped
+silently, so check the configure output if a plugin you expect is absent.
+
+For more detail see the wiki's [Visual C++ build instructions](https://github.com/opentrack/opentrack/wiki/Building-under-MS-Visual-C---2017-and-later)
+and [Linux build instructions](https://github.com/opentrack/opentrack/wiki/Building-on-Linux).
 
