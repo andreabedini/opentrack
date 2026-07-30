@@ -8,16 +8,37 @@
     "dependencies": [
         "libusbmuxd",
         {
-            "name": "opencv",
+            "$comment": [
+                "opencv4 rather than the opencv wrapper port: default-features:false on",
+                "the wrapper does not reach opencv4, which then resolves with its full",
+                "default set -- dnn (protobuf + flatbuffers + abseil, some 15 minutes of",
+                "CI), gapi, quirc, tiff and webp, none of which opentrack uses. Asking",
+                "for opencv4 directly gets just libjpeg-turbo, libpng and zlib.",
+                "core, imgproc, imgcodecs, video, videoio, features2d and flann are not",
+                "features; opencv4 always builds them."
+            ],
+            "name": "opencv4",
             "default-features": false,
             "features": [
                 "calib3d",
+                "fs",
                 "highgui",
+                "intrinsics",
                 "jpeg",
                 "png",
                 "thread"
             ],
             "platform": "windows | osx"
+        },
+        {
+            "$comment": "cv::VideoCapture has no camera backend on Windows without these.",
+            "name": "opencv4",
+            "default-features": false,
+            "features": [
+                "dshow",
+                "msmf"
+            ],
+            "platform": "windows"
         },
         {
             "name": "qtbase",
