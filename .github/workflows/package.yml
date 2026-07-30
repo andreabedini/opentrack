@@ -1,0 +1,170 @@
+name: Package
+
+on:
+    push:
+        tags:
+            - 'opentrack-*'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    packages: write
+
+jobs:
+    Package:
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, macos-latest]
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  submodules: true
+
+            - name: Set up vcpkg
+              shell: bash
+              run: echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+
+            - name: Install system prerequisites (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y libproc2-dev libopencv-dev wine64-tools
+                  sudo apt-get install -y qt6-tools-dev qt6-serialport-dev qt6-base-private-dev
+                  sudo apt-get install -y libusb-1.0-0-dev libsdl2-dev
+
+                  # onnxruntime has no Ubuntu package. Installing under /usr lets
+                  # FindONNXRuntime and linuxdeployqt both locate it unaided.
+                  mkdir /tmp/onnx
+                  wget -qO- https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz | tar --strip-components=1 -zxf - -C /tmp/onnx
+                  sudo cp -R /tmp/onnx/lib /tmp/onnx/include /usr
+
+            # create-dmg is what make-app-bundle.sh uses for the styled disk
+            # image; without it the script skips the .dmg and only builds the
+            # .app, which is the right behaviour for a plain local install.
+            - name: Install system prerequisites (macOS)
+              if: runner.os == 'macOS'
+              run: brew install autoconf autoconf-archive automake libtool libusb mono create-dmg
+
+            - name: Set up NuGet binary cache
+              shell: bash
+              if: runner.os == 'macOS'
+              env:
+                  FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+                  GH_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  nuget="$(vcpkg fetch nuget | tail -n 1)"
+                  if [ ! -f "$nuget" ]; then
+                      echo "::error::'vcpkg fetch nuget' returned no usable path: $nuget"
+                      exit 1
+                  fi
+                  run_nuget() { mono "$nuget" "$@"; }
+
+                  run_nuget sources add \
+                      -Source "$FEED_URL" \
+                      -StorePasswordInClearText \
+                      -Name GitHubPackages \
+                      -UserName '${{ github.repository_owner }}' \
+                      -Password "$GH_PACKAGES_TOKEN"
+                  run_nuget setapikey "$GH_PACKAGES_TOKEN" -Source "$FEED_URL"
+
+                  echo "VCPKG_BINARY_SOURCES=clear;nuget,$FEED_URL,readwrite" >> "$GITHUB_ENV"
+
+            - name: Version
+              shell: bash
+              run: |
+                  if [[ "${{ github.ref_name }}" == opentrack-* ]]; then
+                      echo "version=${{ github.ref_name }}" >> "$GITHUB_ENV"
+                  else
+                      echo "version=opentrack-dev" >> "$GITHUB_ENV"
+                  fi
+
+            # Installed under AppDir/usr on Linux so the layout matches what
+            # AppImage expects. opentrack locates its plugins by a path relative
+            # to the executable, so usr/bin -> usr/libexec/opentrack resolves.
+            - name: Build (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  cmake --preset ci -DCMAKE_INSTALL_PREFIX="$PWD/AppDir/usr"
+                  cmake --build --preset ci
+
+            - name: Build (macOS)
+              if: runner.os == 'macOS'
+              run: |
+                  cmake --preset ci
+                  cmake --build --preset ci
+
+            # linuxdeploy rather than linuxdeployqt: the latter is unmaintained
+            # ("As of 2024, I am no longer actively working on this codebase")
+            # and exits 1 without a message on this project, right after reading
+            # the desktop file.
+            - name: Pack AppImage (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  base=https://github.com/linuxdeploy
+                  wget -q "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+                  wget -q "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
+                  chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+
+                  # The default AppRun only exports usr/lib, but opentrack
+                  # dlopen()s its plugins out of usr/libexec/opentrack.
+                  cat > AppRun <<'EOF'
+                  #!/bin/sh
+                  HERE="$(dirname "$(readlink -f "$0")")"
+                  export LD_LIBRARY_PATH="$HERE/usr/libexec/opentrack:$HERE/usr/lib:$LD_LIBRARY_PATH"
+                  exec "$HERE/usr/bin/opentrack" "$@"
+                  EOF
+                  chmod +x AppRun
+
+                  # extract-and-run avoids needing FUSE on the runner. NO_STRIP
+                  # because the strip that linuxdeploy bundles cannot read the
+                  # .relr.dyn sections current toolchains emit, and fails with
+                  # "unknown type [0x13] section `.relr.dyn'".
+                  export APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1
+                  export QMAKE="$(command -v qmake6 || command -v qmake)"
+                  export PATH="$PWD:$PATH"
+                  export OUTPUT="${{ env.version }}-x86_64.AppImage"
+
+                  ./linuxdeploy-x86_64.AppImage \
+                      --appdir AppDir \
+                      -e AppDir/usr/bin/opentrack \
+                      -d AppDir/usr/share/applications/opentrack.desktop \
+                      -i AppDir/usr/share/icons/hicolor/256x256/apps/opentrack.png \
+                      --deploy-deps-only AppDir/usr/libexec/opentrack \
+                      --custom-apprun AppRun \
+                      --plugin qt \
+                      --output appimage
+
+                  # linuxdeploy honours OUTPUT, but fall back to whatever it wrote
+                  # rather than assume.
+                  if [ ! -f "$OUTPUT" ]; then
+                      img="$(find . -maxdepth 1 -name '*.AppImage' \
+                                  -not -name 'linuxdeploy*' -not -name 'appimagetool*' -print -quit)"
+                      test -n "$img"
+                      mv "$img" "$OUTPUT"
+                  fi
+                  ls -lh "$OUTPUT"
+                  echo "artifact=$OUTPUT" >> "$GITHUB_ENV"
+
+            # make-app-bundle.sh runs from the install step and writes the .dmg
+            # next to the install tree.
+            - name: Collect disk image (macOS)
+              if: runner.os == 'macOS'
+              shell: bash
+              run: |
+                  dmg="$(find build -maxdepth 1 -name '*.dmg' -print -quit)"
+                  if [ -z "$dmg" ]; then
+                      echo "::error::no .dmg was produced"
+                      exit 1
+                  fi
+                  mv "$dmg" "${{ env.version }}-macos-arm64.dmg"
+                  echo "artifact=${{ env.version }}-macos-arm64.dmg" >> "$GITHUB_ENV"
+
+            - name: Upload
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ env.artifact }}
+                  path: ${{ env.artifact }}
