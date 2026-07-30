@@ -1,0 +1,67 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 21,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "default",
+            "displayName": "Release (Ninja + vcpkg)",
+            "description": "Same configuration on Windows, macOS and Linux. Requires VCPKG_ROOT to point at a vcpkg checkout. The 'external' architecture strategy is how an IDE knows to set up the Visual C++ environment for the Ninja generator; CMake itself ignores it, so it is inert off Windows. Without it, building on Windows outside an IDE needs a Developer Command Prompt, or CMake may pick up MinGW instead of MSVC.",
+            "generator": "Ninja",
+            "architecture": {
+                "value": "x64",
+                "strategy": "external"
+            },
+            "binaryDir": "${sourceDir}/build",
+            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "debug",
+            "inherits": "default",
+            "displayName": "Debug (Ninja + vcpkg)",
+            "binaryDir": "${sourceDir}/build-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "ci",
+            "inherits": "default",
+            "displayName": "Release for CI (Ninja + vcpkg)",
+            "description": "Adds --clean-after-build so vcpkg discards each port's buildtrees, packages and downloads once it is built; without it the Windows runner runs out of disk while compiling qttools with qtbase's buildtree still present. Also pins OPENTRACK_USERCONFIG so the runner-specific sdk-paths files are not picked up. Both are kept out of the default preset: the former forces local rebuilds to re-extract sources, the latter would override a developer's own sdk-paths file.",
+            "cacheVariables": {
+                "VCPKG_INSTALL_OPTIONS": "--clean-after-build",
+                "OPENTRACK_USERCONFIG": "cmake/ci-userconfig.cmake"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default",
+            "targets": [
+                "install"
+            ]
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "targets": [
+                "install"
+            ]
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci",
+            "targets": [
+                "install"
+            ]
+        }
+    ]
+}
