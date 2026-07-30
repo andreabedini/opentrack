@@ -31,3 +31,12 @@ target_link_libraries(${self} PRIVATE
 if(APPLE)
     target_link_libraries(${self} PRIVATE "-framework Foundation")
 endif()
+
+# A desktop entry and icon so the installed application shows up in menus, and
+# so AppImage and the distro package generators have the metadata they require.
+if(UNIX AND NOT APPLE)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/opentrack.desktop"
+            DESTINATION "share/applications")
+    install(FILES "${CMAKE_SOURCE_DIR}/gui/images/opentrack.png"
+            DESTINATION "share/icons/hicolor/256x256/apps")
+endif()

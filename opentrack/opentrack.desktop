@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=opentrack
+GenericName=Head tracking
+Comment=Track head movement and relay it to games and flight simulators
+Exec=opentrack
+Icon=opentrack
+Terminal=false
+Categories=Game;Utility;
+Keywords=head;tracking;tracker;simulator;flight;
+StartupWMClass=opentrack
