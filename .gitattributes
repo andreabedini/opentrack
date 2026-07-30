@@ -18,5 +18,10 @@
 *.ts text eol=lf
 *.in text eol=lf
 
+# vcpkg overlay ports feed these to `git apply`, which rejects CRLF context
+# lines with "corrupt patch". They must stay LF even on Windows checkouts.
+*.patch text eol=lf
+*.diff text eol=lf
+
 *.cmd text eol=crlf
 *.bat text eol=crlf

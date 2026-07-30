@@ -1,0 +1,66 @@
+{
+    "$comment": [
+        "Dependencies without a 'platform' field are built by vcpkg on every platform.",
+        "Qt and OpenCV are taken from the distribution on Linux: vcpkg's qtbase needs a",
+        "pile of apt-installed X11/GL/fontconfig headers there regardless, so building it",
+        "from source would cost an hour of CI and buy nothing."
+    ],
+    "dependencies": [
+        "libusbmuxd",
+        {
+            "name": "opencv",
+            "default-features": false,
+            "features": [
+                "calib3d",
+                "highgui",
+                "jpeg",
+                "png",
+                "thread"
+            ],
+            "platform": "windows | osx"
+        },
+        {
+            "name": "qtbase",
+            "default-features": false,
+            "features": [
+                "concurrent",
+                "doubleconversion",
+                "freetype",
+                "gui",
+                "harfbuzz",
+                "jpeg",
+                "network",
+                "opengl",
+                "pcre2",
+                "png",
+                "thread",
+                "widgets"
+            ],
+            "platform": "windows | osx"
+        },
+        {
+            "$comment": [
+                "Only used for QMediaDevices::videoInputs() in compat/camera-names.cpp,",
+                "which the always-built darwin/AVFoundation backend provides. The port",
+                "enables ffmpeg by default, which drags in qtdeclarative and leaves bare",
+                "-lavformat/-lavcodec flags with no -L on the link line of everything that",
+                "links Qt6::Multimedia."
+            ],
+            "name": "qtmultimedia",
+            "default-features": false,
+            "platform": "osx"
+        },
+        {
+            "name": "qtserialport",
+            "platform": "windows | osx"
+        },
+        {
+            "name": "qttools",
+            "default-features": false,
+            "features": [
+                "linguist"
+            ],
+            "platform": "windows | osx"
+        }
+    ]
+}
