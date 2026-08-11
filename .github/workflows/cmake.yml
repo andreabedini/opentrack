@@ -94,6 +94,10 @@ jobs:
     - name: Build
       run: ${{matrix.cmake}} --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target install
 
+    - name: TEMP list installed modules (debug)
+      run: Get-ChildItem "${{github.workspace}}/build/install/modules" -Filter *.dll | Select-Object -ExpandProperty Name
+      if: matrix.os == 'windows-latest'
+
 #    - name: Upload build
 #      uses: actions/upload-artifact@v3
 #      with:
